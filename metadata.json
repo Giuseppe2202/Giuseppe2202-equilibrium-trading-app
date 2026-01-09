@@ -1,0 +1,7 @@
+{
+  "name": "marian",
+  "description": "Plataforma de gestión y psicología de trading avanzada con análisis de IA y estética Cyber Academy.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
