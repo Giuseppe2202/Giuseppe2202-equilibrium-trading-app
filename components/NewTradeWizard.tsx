@@ -1240,3 +1240,4 @@ const NewTradeWizard: React.FC<NewTradeWizardProps> = ({
 };
 
 export default NewTradeWizard;
+// TEST CHANGE - should appear in git
