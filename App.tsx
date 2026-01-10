@@ -72,6 +72,12 @@ const App: React.FC = () => {
     addAlert("Protocolo de Trade Registrado Correctamente", "info");
   };
 
+  // ✅ NUEVO: necesario para que HistoryAnalysis pueda persistir cierres parciales y totales
+  const handleUpdateTrades = (updatedTrades: Trade[]) => {
+    setTrades(updatedTrades);
+    storageService.saveTrades(updatedTrades);
+  };
+
   // ✅ Logout correcto: cierra sesión Supabase y NO borra datos locales
   const handleLogout = async () => {
     try {
@@ -140,13 +146,19 @@ const App: React.FC = () => {
           <HistoryAnalysis
             trades={trades}
             profile={profile}
+            onUpdateTrades={handleUpdateTrades}
           />
         )}
 
-        {currentView === "coach" && <CoachChat profile={profile} trades={trades} />}
+        {currentView === "coach" && (
+          <CoachChat profile={profile} trades={trades} />
+        )}
 
         {currentView === "editing-profile" && (
-          <Onboarding initialProfile={profile} onComplete={handleOnboardingComplete} />
+          <Onboarding
+            initialProfile={profile}
+            onComplete={handleOnboardingComplete}
+          />
         )}
 
         {currentView === "profile" && (
@@ -166,7 +178,9 @@ const App: React.FC = () => {
                   <p className="text-[10px] font-mono text-slate-400 uppercase tracking-widest">
                     Estrategia Principal
                   </p>
-                  <p className="text-xl font-bold text-white">{profile.traderStyle}</p>
+                  <p className="text-xl font-bold text-white">
+                    {profile.traderStyle}
+                  </p>
                 </div>
               </div>
 
@@ -234,7 +248,8 @@ const App: React.FC = () => {
                           {acc.name}
                         </p>
                         <p className="text-[10px] font-mono text-slate-400 uppercase mt-1">
-                          Cap: {acc.currentCapital.toLocaleString()} {acc.currency}
+                          Cap: {acc.currentCapital.toLocaleString()}{" "}
+                          {acc.currency}
                         </p>
                       </div>
                     </div>

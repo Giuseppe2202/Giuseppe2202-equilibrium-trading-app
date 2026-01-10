@@ -1,10 +1,20 @@
-import { UserProfile, Trade, ChatMessage, TradeLocation, TradeDevice } from '../types';
+import {
+  UserProfile,
+  Trade,
+  ChatMessage,
+  TradeLocation,
+  TradeDevice
+} from "../types";
 
 const KEYS = {
-  PROFILE: 'eq_profile',
-  TRADES: 'eq_trades',
-  CHATS: 'eq_chats'
+  PROFILE: "eq_profile",
+  TRADES: "eq_trades",
+  CHATS: "eq_chats"
 };
+
+/* =========================
+   Utils
+========================= */
 
 function safeJsonParse<T>(raw: string | null, fallback: T): T {
   if (!raw) return fallback;
@@ -15,110 +25,154 @@ function safeJsonParse<T>(raw: string | null, fallback: T): T {
   }
 }
 
+/* =========================
+   Profile Normalization
+========================= */
+
 function ensureProfileDefaults(profile: any): UserProfile {
   const p = (profile || {}) as UserProfile;
 
   return {
-    name: p.name ?? '',
-    traderStyle: p.traderStyle ?? 'DayTrader',
+    name: p.name ?? "",
+    traderStyle: p.traderStyle ?? "DayTrader",
     secondaryStyles: Array.isArray(p.secondaryStyles) ? p.secondaryStyles : [],
     primaryMarkets: Array.isArray(p.primaryMarkets) ? p.primaryMarkets : [],
     secondaryMarkets: Array.isArray(p.secondaryMarkets) ? p.secondaryMarkets : [],
     accounts: Array.isArray(p.accounts) ? p.accounts : [],
     strengths: Array.isArray(p.strengths) ? p.strengths : [],
     weaknesses: Array.isArray(p.weaknesses) ? p.weaknesses : [],
-    setupsByAccount: p.setupsByAccount && typeof p.setupsByAccount === 'object' ? p.setupsByAccount : {},
-    assetsByAccount: p.assetsByAccount && typeof p.assetsByAccount === 'object' ? p.assetsByAccount : {}
+    setupsByAccount:
+      p.setupsByAccount && typeof p.setupsByAccount === "object"
+        ? p.setupsByAccount
+        : {},
+    assetsByAccount:
+      p.assetsByAccount && typeof p.assetsByAccount === "object"
+        ? p.assetsByAccount
+        : {}
   };
 }
+
+/* =========================
+   Trade Normalization
+========================= */
 
 function ensureTradeDefaults(trade: any): Trade {
   const t = (trade || {}) as Trade;
 
   const location: TradeLocation | undefined =
-    t.tradeLocation === 'Casa' || t.tradeLocation === 'Trabajo' || t.tradeLocation === 'Calle'
+    t.tradeLocation === "Casa" ||
+    t.tradeLocation === "Trabajo" ||
+    t.tradeLocation === "Calle"
       ? t.tradeLocation
       : undefined;
 
   const device: TradeDevice | undefined =
-    t.tradeDevice === 'Laptop' || t.tradeDevice === 'Celular'
+    t.tradeDevice === "Laptop" || t.tradeDevice === "Celular"
       ? t.tradeDevice
       : undefined;
 
   return {
     ...t,
 
+    /* Identidad */
     id: t.id ?? crypto.randomUUID(),
     createdAt: t.createdAt ?? new Date().toISOString(),
     tradeDateTime: t.tradeDateTime ?? new Date().toISOString().slice(0, 16),
-    status: t.status ?? 'Abierto',
 
-    accountId: t.accountId ?? '',
-    market: t.market ?? 'Forex',
-    asset: t.asset ?? '',
-    direction: t.direction ?? 'long',
-    timeframe: t.timeframe ?? '1h',
+    /* Estado */
+    status: t.status ?? "Abierto",
 
-    setup: t.setup ?? '',
+    /* Mercado */
+    accountId: t.accountId ?? "",
+    market: t.market ?? "Forex",
+    asset: t.asset ?? "",
+    direction: t.direction ?? "long",
+    timeframe: t.timeframe ?? "1h",
+
+    /* Setup */
+    setup: t.setup ?? "",
     customSetupName: t.customSetupName,
 
-    marketSentiment: t.marketSentiment ?? 'Neutral',
-    assetSentiment: t.assetSentiment ?? 'Neutral',
+    /* Sentimiento */
+    marketSentiment: t.marketSentiment ?? "Neutral",
+    assetSentiment: t.assetSentiment ?? "Neutral",
     cryptoDominance: t.cryptoDominance,
 
-    notesUser: t.notesUser ?? '',
-    thesis: t.thesis ?? '',
+    /* Contenido */
+    notesUser: t.notesUser ?? "",
+    thesis: t.thesis ?? "",
     images: Array.isArray(t.images) ? t.images : [],
 
+    /* Macro */
     macroTrend: t.macroTrend ?? {
-      macro: 'No seguro',
-      micro: 'No seguro',
-      reversalEvidence: 'no seguro',
-      htfLevelsChecked: 'no seguro'
+      macro: "No seguro",
+      micro: "No seguro",
+      reversalEvidence: "no seguro",
+      htfLevelsChecked: "no seguro"
     },
 
-    riskR: typeof t.riskR === 'number' ? t.riskR : 1,
-    entry: typeof t.entry === 'number' ? t.entry : 0,
-    stopLoss: typeof t.stopLoss === 'number' ? t.stopLoss : 0,
+    /* Riesgo */
+    riskR: typeof t.riskR === "number" ? t.riskR : 1,
+    entry: typeof t.entry === "number" ? t.entry : 0,
+    stopLoss: typeof t.stopLoss === "number" ? t.stopLoss : 0,
     takeProfits: Array.isArray(t.takeProfits) ? t.takeProfits : [0],
 
-    positionSizeUnits: typeof t.positionSizeUnits === 'number' ? t.positionSizeUnits : 0,
-    remainingPositionSizeUnits: typeof t.remainingPositionSizeUnits === 'number' ? t.remainingPositionSizeUnits : undefined,
+    /* Position sizing */
+    positionSizeUnits:
+      typeof t.positionSizeUnits === "number" ? t.positionSizeUnits : 0,
+    remainingPositionSizeUnits:
+      typeof t.remainingPositionSizeUnits === "number"
+        ? t.remainingPositionSizeUnits
+        : undefined,
 
-    rr: typeof t.rr === 'number' ? t.rr : 0,
+    rr: typeof t.rr === "number" ? t.rr : 0,
 
+    /* Resultados */
     pnl: t.pnl,
     partialExits: Array.isArray(t.partialExits) ? t.partialExits : undefined,
 
-    executionQuality: t.executionQuality ?? 'C',
-    qualityScore: typeof t.qualityScore === 'number' ? t.qualityScore : 0,
+    /* Calidad */
+    executionQuality: t.executionQuality ?? "C",
+    qualityScore:
+      typeof t.qualityScore === "number" ? t.qualityScore : 0,
     coachNotes: t.coachNotes,
 
-    mentalState: t.mentalState ?? 'Neutral',
-    reason: t.reason ?? '',
-    motive: t.motive ?? '',
-    alertsTriggered: Array.isArray(t.alertsTriggered) ? t.alertsTriggered : [],
+    /* Psicología */
+    mentalState: t.mentalState ?? "Neutral",
+    reason: t.reason ?? "",
+    motive: t.motive ?? "",
+    alertsTriggered: Array.isArray(t.alertsTriggered)
+      ? t.alertsTriggered
+      : [],
 
+    /* Contexto */
     tradeLocation: location,
     tradeDevice: device,
 
+    /* Cierre */
     exitPrice: t.exitPrice,
     exitDateTime: t.exitDateTime,
     closingNote: t.closingNote
   };
 }
 
+/* =========================
+   Migration
+========================= */
+
 function migrateTradesIfNeeded(trades: Trade[]): Trade[] {
   let changed = false;
 
   const migrated = (trades || []).map((t: any) => {
-    const beforeLoc = t?.tradeLocation;
-    const beforeDev = t?.tradeDevice;
-
     const fixed = ensureTradeDefaults(t);
 
-    if (beforeLoc !== fixed.tradeLocation) changed = true;
-    if (beforeDev !== fixed.tradeDevice) changed = true;
+    if (
+      t.tradeLocation !== fixed.tradeLocation ||
+      t.tradeDevice !== fixed.tradeDevice ||
+      t.remainingPositionSizeUnits !== fixed.remainingPositionSizeUnits
+    ) {
+      changed = true;
+    }
 
     return fixed;
   });
@@ -127,52 +181,71 @@ function migrateTradesIfNeeded(trades: Trade[]): Trade[] {
     try {
       localStorage.setItem(KEYS.TRADES, JSON.stringify(migrated));
     } catch {
-      // ignore
+      /* ignore */
     }
   }
 
   return migrated;
 }
 
+/* =========================
+   Storage API
+========================= */
+
 export const storageService = {
+  /* Profile */
   saveProfile: (profile: UserProfile) => {
     const safe = ensureProfileDefaults(profile);
     localStorage.setItem(KEYS.PROFILE, JSON.stringify(safe));
   },
 
   getProfile: (): UserProfile | null => {
-    const data = safeJsonParse<UserProfile | null>(localStorage.getItem(KEYS.PROFILE), null);
-    if (!data) return null;
+    const raw = safeJsonParse<UserProfile | null>(
+      localStorage.getItem(KEYS.PROFILE),
+      null
+    );
+    if (!raw) return null;
 
-    const safe = ensureProfileDefaults(data);
+    const safe = ensureProfileDefaults(raw);
 
-    // re guarda para normalizar
     try {
       localStorage.setItem(KEYS.PROFILE, JSON.stringify(safe));
     } catch {
-      // ignore
+      /* ignore */
     }
 
     return safe;
   },
 
+  /* Trades */
   saveTrades: (trades: Trade[]) => {
-    localStorage.setItem(KEYS.TRADES, JSON.stringify(trades));
+    const safeTrades = (trades || []).map((t: any) =>
+      ensureTradeDefaults(t)
+    );
+    localStorage.setItem(KEYS.TRADES, JSON.stringify(safeTrades));
   },
 
   getTrades: (): Trade[] => {
-    const raw = safeJsonParse<Trade[]>(localStorage.getItem(KEYS.TRADES), []);
+    const raw = safeJsonParse<Trade[]>(
+      localStorage.getItem(KEYS.TRADES),
+      []
+    );
     return migrateTradesIfNeeded(raw);
   },
 
+  /* Chat */
   saveChats: (chats: ChatMessage[]) => {
     localStorage.setItem(KEYS.CHATS, JSON.stringify(chats));
   },
 
   getChats: (): ChatMessage[] => {
-    return safeJsonParse<ChatMessage[]>(localStorage.getItem(KEYS.CHATS), []);
+    return safeJsonParse<ChatMessage[]>(
+      localStorage.getItem(KEYS.CHATS),
+      []
+    );
   },
 
+  /* Reset */
   clearAll: () => {
     localStorage.removeItem(KEYS.PROFILE);
     localStorage.removeItem(KEYS.TRADES);

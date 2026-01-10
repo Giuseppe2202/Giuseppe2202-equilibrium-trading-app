@@ -14,7 +14,7 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): P
   let timeoutId: any;
 
   const timeout = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(() => reject(new Error(label + " timeout after " + ms + "ms")), ms);
+    timeoutId = setTimeout(() => reject(new Error(`${label} timeout after ${ms}ms`)), ms);
   });
 
   try {
@@ -27,10 +27,18 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): P
 export function AuthGate(props: { children: React.ReactNode }) {
   const [state, setState] = React.useState<GateState>("LOADING");
 
-  async function resolveAuthOnce(): Promise<GateState> {
-    const sessionRes = await withTimeout(supabase.auth.getSession(), 4000, "getSession");
-    const session = sessionRes.data.session;
+  // Evita setState luego de unmount
+  const mountedRef = React.useRef(true);
 
+  // Evita que se solapen resoluciones (muy común con onAuthStateChange)
+  const inFlightRef = React.useRef<Promise<void> | null>(null);
+
+  const safeSetState = React.useCallback((next: GateState) => {
+    if (!mountedRef.current) return;
+    setState(next);
+  }, []);
+
+  async function resolveGateForSession(session: any | null): Promise<GateState> {
     if (!session) return "SIGNED_OUT";
 
     try {
@@ -38,43 +46,81 @@ export function AuthGate(props: { children: React.ReactNode }) {
       return status === "ACTIVE" ? "ACTIVE" : "PENDING";
     } catch (err) {
       console.error("Access status check failed:", err);
+
+      // Importante: si hay sesión, NO mandes SIGNED_OUT por un fallo temporal
+      // Mejor PENDING como fallback (igual que tu intención original)
       return "PENDING";
     }
   }
 
-  async function resolveAuthWithRetry() {
-    for (let i = 0; i < 12; i++) {
-      try {
-        const next = await resolveAuthOnce();
-        setState(next);
-        return;
-      } catch (err) {
-        console.error("Auth resolve attempt failed:", err);
-      }
-      await sleep(250);
-    }
+  async function resolveFromCurrentSessionOnce(): Promise<GateState> {
+    const sessionRes = await withTimeout(supabase.auth.getSession(), 4000, "getSession");
+    const session = sessionRes.data.session;
+    return resolveGateForSession(session);
+  }
 
-    setState("SIGNED_OUT");
+  async function resolveWithRetry(fromSession: any | null = undefined) {
+    // Si ya hay una resolución corriendo, no lances otra
+    if (inFlightRef.current) return;
+
+    inFlightRef.current = (async () => {
+      // Mientras resolvemos, mostramos LOADING para evitar “parpadeos” de UI
+      safeSetState("LOADING");
+
+      // 12 intentos * 250ms = 3s aprox (más los timeouts internos)
+      for (let i = 0; i < 12; i++) {
+        if (!mountedRef.current) return;
+
+        try {
+          // Si nos pasaron session desde onAuthStateChange, úsala.
+          // Si no, consulta getSession()
+          const next =
+            fromSession !== undefined
+              ? await resolveGateForSession(fromSession)
+              : await resolveFromCurrentSessionOnce();
+
+          if (!mountedRef.current) return;
+          safeSetState(next);
+          return;
+        } catch (err) {
+          console.error("Auth resolve attempt failed:", err);
+          await sleep(250);
+        }
+      }
+
+      // Si luego de varios intentos no pudo resolver, decide según si hay sesión
+      try {
+        const fallback = await resolveFromCurrentSessionOnce();
+        safeSetState(fallback);
+      } catch {
+        safeSetState("SIGNED_OUT");
+      }
+    })();
+
+    try {
+      await inFlightRef.current;
+    } finally {
+      inFlightRef.current = null;
+    }
   }
 
   React.useEffect(() => {
-    let cancelled = false;
+    mountedRef.current = true;
 
-    const run = async () => {
-      if (cancelled) return;
-      await resolveAuthWithRetry();
-    };
+    // Resolución inicial
+    resolveWithRetry();
 
-    run();
-
-    const { data } = supabase.auth.onAuthStateChange(() => {
-      if (!cancelled) resolveAuthWithRetry();
+    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+      // Cada cambio de auth re-resuelve usando la session ya provista
+      resolveWithRetry(session);
     });
 
     return () => {
-      cancelled = true;
+      mountedRef.current = false;
       data.subscription.unsubscribe();
     };
+    // safeSetState es estable por useCallback, no hace falta ponerlo en deps para evitar re-suscripciones
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   if (state === "LOADING") {

@@ -1,5 +1,17 @@
-export type MarketType = 'Cripto' | 'Forex' | 'Índices' | 'Acciones' | 'Opciones' | 'Commodities';
-export type TraderStyleType = 'Scalper' | 'DayTrader' | 'SwingTrader' | 'PositionTrader' | 'Inversor';
+export type MarketType =
+  | 'Cripto'
+  | 'Forex'
+  | 'Índices'
+  | 'Acciones'
+  | 'Opciones'
+  | 'Commodities';
+
+export type TraderStyleType =
+  | 'Scalper'
+  | 'DayTrader'
+  | 'SwingTrader'
+  | 'PositionTrader'
+  | 'Inversor';
 
 export type TradeLocation = 'Casa' | 'Trabajo' | 'Calle';
 export type TradeDevice = 'Laptop' | 'Celular';
@@ -30,7 +42,7 @@ export interface TradePnL {
 
 export interface PartialExit {
   id: string;
-  percentage: number; // 1-99
+  percentage: number; // 1–100
   price: number;
   dateTime: string;
   note?: string;
@@ -42,6 +54,7 @@ export interface Trade {
   id: string;
   createdAt: string;
   tradeDateTime: string;
+
   status: 'Abierto' | 'Cerrado';
 
   accountId: string;
@@ -63,16 +76,20 @@ export interface Trade {
 
   macroTrend: MacroTrend;
 
+  // Riesgo y precios
   riskR: number;
   entry: number;
   stopLoss: number;
   takeProfits: number[];
 
+  // Tamaño de posición
   positionSizeUnits: number;
   remainingPositionSizeUnits?: number;
 
+  // Métricas
   rr: number;
 
+  // Resultados
   pnl?: TradePnL;
   partialExits?: PartialExit[];
 
@@ -86,9 +103,11 @@ export interface Trade {
 
   alertsTriggered: string[];
 
+  // Contexto operativo
   tradeLocation?: TradeLocation;
   tradeDevice?: TradeDevice;
 
+  // Cierre
   exitPrice?: number;
   exitDateTime?: string;
   closingNote?: string;
