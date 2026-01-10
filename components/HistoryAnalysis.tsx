@@ -117,6 +117,7 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
     return ["todos", ...Array.from(set).sort()];
   }, [trades]);
 
+  // IMPORTANT: realized values for display
   const realizedDollars = (t: Trade) => {
     const partial = t.partialExits?.reduce((acc, p) => acc + (p.pnlDollars || 0), 0) || 0;
     const closed = t.pnl?.dollars ?? 0;
@@ -138,7 +139,7 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
     let result = [...trades];
 
     if (filters.status !== "todos") result = result.filter((t) => t.status === filters.status);
-    if (filters.direction !== "ambos") result = result.filter((t) => t.direction === filters.direction);
+    if (filters.direction !== "ambos") result = result.filter((t) => t.direction === (filters.direction as any));
     if (filters.market !== "todos") result = result.filter((t) => t.market === filters.market);
     if (filters.asset) result = result.filter((t) => t.asset.toLowerCase().includes(filters.asset.toLowerCase()));
     if (filters.setup !== "todos") result = result.filter((t) => t.setup === filters.setup);
@@ -153,6 +154,14 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
   const closedTradesForMetrics = useMemo(() => filteredTrades.filter((t) => t.status === "Cerrado"), [filteredTrades]);
 
   const selectedTrade = useMemo(() => trades.find((t) => t.id === selectedTradeId), [trades, selectedTradeId]);
+
+  // ---------------------------------------------------------------------------
+  // FIX CORE: ALWAYS PERSIST UPDATED TRADE ARRAY THROUGH onUpdateTrades
+  // ---------------------------------------------------------------------------
+  const persistTradeUpdate = (updatedTrade: Trade) => {
+    const newTrades = trades.map((t) => (t.id === updatedTrade.id ? updatedTrade : t));
+    onUpdateTrades?.(newTrades);
+  };
 
   const addExportBranding = (canvas: HTMLCanvasElement) => {
     const ctx = canvas.getContext("2d");
@@ -477,6 +486,9 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
     };
   }, [closedTradesForMetrics]);
 
+  // ---------------------------------------------------------------------------
+  // CLOSE TOTAL
+  // ---------------------------------------------------------------------------
   const handleConfirmClose = () => {
     if (!selectedTrade) return;
 
@@ -506,7 +518,7 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
     const multiplier = isLong ? 1 : -1;
 
     const currentDollars = diff * units * multiplier;
-    const partialsTotalDollars = selectedTrade.partialExits?.reduce((acc, p) => acc + p.pnlDollars, 0) || 0;
+    const partialsTotalDollars = selectedTrade.partialExits?.reduce((acc, p) => acc + (p.pnlDollars || 0), 0) || 0;
     const finalDollars = partialsTotalDollars + currentDollars;
 
     const riskPerUnit = Math.abs(entry - selectedTrade.stopLoss);
@@ -526,8 +538,7 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
       remainingPositionSizeUnits: 0,
     };
 
-    const newTrades = trades.map((t) => (t.id === updatedTrade.id ? updatedTrade : t));
-    onUpdateTrades?.(newTrades);
+    persistTradeUpdate(updatedTrade);
 
     setIsClosing(false);
     setClosePrice("");
@@ -535,6 +546,13 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
     setCloseError(null);
   };
 
+  // ---------------------------------------------------------------------------
+  // CLOSE PARTIAL (AND 100% -> CLOSE TOTAL FROM PARTIAL MODAL)
+  // FIXES:
+  // - UnitsToClose must be based on CURRENT remaining units, not original units.
+  // - remainingPositionSizeUnits must decrease and persist.
+  // - If remaining becomes 0, mark as Cerrado and compute final PnL.
+  // ---------------------------------------------------------------------------
   const handleConfirmPartialClose = () => {
     if (!selectedTrade) return;
 
@@ -550,23 +568,31 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
       return;
     }
 
+    const entry = selectedTrade.entry;
+    const originalUnits = selectedTrade.positionSizeUnits;
+
+    const currentRemainingUnits =
+      selectedTrade.remainingPositionSizeUnits !== undefined ? selectedTrade.remainingPositionSizeUnits : originalUnits;
+
+    if (currentRemainingUnits <= 0) {
+      setPartialError("No queda tamaño de posición para cerrar.");
+      return;
+    }
+
+    const isLong = selectedTrade.direction === "long";
+    const diff = price - entry;
+    const multiplier = isLong ? 1 : -1;
+
+    // If user selects 100%, close ALL remaining units and mark closed
     if (percentage === 100) {
-      const entry = selectedTrade.entry;
-      const units =
-        selectedTrade.remainingPositionSizeUnits !== undefined
-          ? selectedTrade.remainingPositionSizeUnits
-          : selectedTrade.positionSizeUnits;
+      const unitsToClose = currentRemainingUnits;
 
-      const isLong = selectedTrade.direction === "long";
-      const diff = price - entry;
-      const multiplier = isLong ? 1 : -1;
-
-      const currentDollars = diff * units * multiplier;
-      const partialsTotalDollars = selectedTrade.partialExits?.reduce((acc, p) => acc + p.pnlDollars, 0) || 0;
+      const currentDollars = diff * unitsToClose * multiplier;
+      const partialsTotalDollars = selectedTrade.partialExits?.reduce((acc, p) => acc + (p.pnlDollars || 0), 0) || 0;
       const finalDollars = partialsTotalDollars + currentDollars;
 
       const riskPerUnit = Math.abs(entry - selectedTrade.stopLoss);
-      const initialRiskAmount = riskPerUnit * selectedTrade.positionSizeUnits;
+      const initialRiskAmount = riskPerUnit * originalUnits;
       const finalRMultiple = initialRiskAmount === 0 ? 0 : finalDollars / initialRiskAmount;
       const finalPercent = finalRMultiple * (selectedTrade.riskR || 0);
 
@@ -582,8 +608,7 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
         remainingPositionSizeUnits: 0,
       };
 
-      const newTrades = trades.map((t) => (t.id === updatedTrade.id ? updatedTrade : t));
-      onUpdateTrades?.(newTrades);
+      persistTradeUpdate(updatedTrade);
 
       setIsPartialClosing(false);
       setPartialPercentage("");
@@ -593,22 +618,18 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
       return;
     }
 
-    const entry = selectedTrade.entry;
-    const originalUnits = selectedTrade.positionSizeUnits;
+    // Partial close percentage should apply to CURRENT remaining units (not original)
+    const unitsToClose = (percentage / 100) * currentRemainingUnits;
 
-    const currentRemainingUnits =
-      selectedTrade.remainingPositionSizeUnits !== undefined ? selectedTrade.remainingPositionSizeUnits : originalUnits;
-
-    const unitsToClose = (percentage / 100) * originalUnits;
-
-    if (unitsToClose > currentRemainingUnits + 0.0000001) {
-      setPartialError(`Solo queda un ${((currentRemainingUnits / originalUnits) * 100).toFixed(1)}% disponible.`);
+    // Guard: avoid tiny floating residue issues
+    if (unitsToClose <= 0) {
+      setPartialError("El porcentaje seleccionado no cierra ninguna unidad.");
       return;
     }
-
-    const isLong = selectedTrade.direction === "long";
-    const diff = price - entry;
-    const multiplier = isLong ? 1 : -1;
+    if (unitsToClose > currentRemainingUnits + 1e-9) {
+      setPartialError(`Solo queda un ${(currentRemainingUnits / originalUnits * 100).toFixed(1)}% disponible.`);
+      return;
+    }
 
     const partialDollars = diff * unitsToClose * multiplier;
 
@@ -618,7 +639,7 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
 
     const newPartial: PartialExit = {
       id: crypto.randomUUID(),
-      percentage,
+      percentage, // percentage of CURRENT remaining at time of close (kept as user entered)
       price,
       dateTime: partialDate,
       note: partialNote,
@@ -626,14 +647,47 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
       pnlR: partialR,
     };
 
+    const nextRemaining = Math.max(0, currentRemainingUnits - unitsToClose);
+
+    // If nextRemaining == 0, auto-close trade and compute final pnl
+    if (nextRemaining <= 1e-9) {
+      const partialsTotalDollars =
+        (selectedTrade.partialExits?.reduce((acc, p) => acc + (p.pnlDollars || 0), 0) || 0) + partialDollars;
+      const finalDollars = partialsTotalDollars;
+
+      const finalRMultiple = initialRiskAmount === 0 ? 0 : finalDollars / initialRiskAmount;
+      const finalPercent = finalRMultiple * (selectedTrade.riskR || 0);
+
+      const updatedPnl: TradePnL = { dollars: finalDollars, percent: finalPercent, rMultiple: finalRMultiple };
+
+      const updatedTrade: Trade = {
+        ...selectedTrade,
+        status: "Cerrado",
+        exitPrice: price,
+        exitDateTime: partialDate,
+        closingNote: partialNote,
+        pnl: updatedPnl,
+        remainingPositionSizeUnits: 0,
+        partialExits: [...(selectedTrade.partialExits || []), newPartial],
+      };
+
+      persistTradeUpdate(updatedTrade);
+
+      setIsPartialClosing(false);
+      setPartialPercentage("");
+      setPartialPrice("");
+      setPartialNote("");
+      setPartialError(null);
+      return;
+    }
+
     const updatedTrade: Trade = {
       ...selectedTrade,
-      remainingPositionSizeUnits: currentRemainingUnits - unitsToClose,
+      remainingPositionSizeUnits: nextRemaining,
       partialExits: [...(selectedTrade.partialExits || []), newPartial],
     };
 
-    const newTrades = trades.map((t) => (t.id === updatedTrade.id ? updatedTrade : t));
-    onUpdateTrades?.(newTrades);
+    persistTradeUpdate(updatedTrade);
 
     setIsPartialClosing(false);
     setPartialPercentage("");
@@ -642,6 +696,9 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
     setPartialError(null);
   };
 
+  // ---------------------------------------------------------------------------
+  // DETAIL VIEW
+  // ---------------------------------------------------------------------------
   if (selectedTrade) {
     const currentRemainingPercent =
       selectedTrade.remainingPositionSizeUnits !== undefined
@@ -650,11 +707,11 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
 
     const realizedDollarsSelected =
       (selectedTrade.pnl?.dollars || 0) ||
-      (selectedTrade.partialExits?.reduce((acc, p) => acc + p.pnlDollars, 0) || 0);
+      (selectedTrade.partialExits?.reduce((acc, p) => acc + (p.pnlDollars || 0), 0) || 0);
 
     const realizedRSelected =
       (selectedTrade.pnl?.rMultiple || 0) ||
-      (selectedTrade.partialExits?.reduce((acc, p) => acc + p.pnlR, 0) || 0);
+      (selectedTrade.partialExits?.reduce((acc, p) => acc + (p.pnlR || 0), 0) || 0);
 
     return (
       <div className="min-h-screen bg-navy p-4 md:p-8 animate-fade-in relative">
@@ -1052,6 +1109,9 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
     );
   }
 
+  // ---------------------------------------------------------------------------
+  // LIST VIEW
+  // ---------------------------------------------------------------------------
   return (
     <div className="min-h-screen bg-navy p-4 md:p-8 max-w-7xl mx-auto space-y-6">
       <div className="flex flex-wrap gap-3 items-center justify-between bg-navy-light cyber-border p-4 rounded-2xl">
@@ -1626,7 +1686,7 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
                   <div className="flex-1 flex flex-col items-center">
                     <span
                       className={`text-sm font-black ${
-                        t.qualityScore >= 8 ? "text-white" : t.qualityScore >= 5 ? "text-gold" : "text-red-500"
+                        (t.qualityScore || 0) >= 8 ? "text-white" : (t.qualityScore || 0) >= 5 ? "text-gold" : "text-red-500"
                       }`}
                     >
                       {t.qualityScore}
