@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useState, useMemo, useRef, useEffect } from "react";
 import { Trade, UserProfile, TradePnL, PartialExit } from "../types";
 import { MARKETS, MOTIVES_NEGATIVE } from "../constants";
 import {
@@ -44,17 +44,10 @@ import { jsPDF } from "jspdf";
 interface HistoryAnalysisProps {
   trades: Trade[];
   profile: UserProfile;
-
-  /*
-    IMPORTANT
-    If this is undefined, closing will never persist visually because this component
-    does not own the trades state. It receives trades via props.
-  */
   onUpdateTrades?: (trades: Trade[]) => void;
 }
 
 type EquityMode = "usd" | "percent" | "r";
-type TabId = "summary" | "setup" | "psycho" | "time" | "trades";
 
 const toLocalDatetimeInputValue = (date = new Date()) => {
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -66,11 +59,20 @@ const toLocalDatetimeInputValue = (date = new Date()) => {
   return `${yyyy}-${mm}-${dd}T${hh}:${min}`;
 };
 
-const clampToZero = (n: number) => (n < 0 ? 0 : n);
-const roundUnits = (n: number) => Math.round(n * 1e8) / 1e8;
+const normalize = (v?: string) => (v ?? "").trim().toLowerCase();
+
+const isClosed = (t: Trade) => {
+  const s = normalize((t as any).status);
+  return s === "cerrado" || s === "closed" || s === "c" || s === "done" || s === "final";
+};
+
+const isOpen = (t: Trade) => {
+  const s = normalize((t as any).status);
+  return s === "abierto" || s === "open" || s === "o" || s === "active";
+};
 
 const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUpdateTrades }) => {
-  const [activeTab, setActiveTab] = useState<TabId>("summary");
+  const [activeTab, setActiveTab] = useState<"summary" | "setup" | "psycho" | "time" | "trades">("summary");
   const [selectedTradeId, setSelectedTradeId] = useState<string | null>(null);
   const [equityMode, setEquityMode] = useState<EquityMode>("usd");
   const [isAiLoading, setIsAiLoading] = useState(false);
@@ -81,6 +83,7 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
 
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [includeOpenInMass, setIncludeOpenInMass] = useState(false);
+
   const exportMenuRef = useRef<HTMLDivElement>(null);
 
   const [isClosing, setIsClosing] = useState(false);
@@ -110,7 +113,9 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
     const onDown = (e: MouseEvent) => {
       if (!showExportMenu) return;
       const target = e.target as Node;
-      if (exportMenuRef.current && !exportMenuRef.current.contains(target)) setShowExportMenu(false);
+      if (exportMenuRef.current && !exportMenuRef.current.contains(target)) {
+        setShowExportMenu(false);
+      }
     };
     window.addEventListener("mousedown", onDown);
     return () => window.removeEventListener("mousedown", onDown);
@@ -119,79 +124,65 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
   const setupOptions = useMemo(() => {
     const set = new Set<string>();
     trades.forEach((t) => {
-      if (t.setup) set.add(t.setup);
+      if ((t as any).setup) set.add((t as any).setup);
     });
     return ["todos", ...Array.from(set).sort()];
   }, [trades]);
 
-  const selectedTrade = useMemo(() => trades.find((t) => t.id === selectedTradeId), [trades, selectedTradeId]);
-
-  const getOriginalUnits = (t: Trade) => Number(t.positionSizeUnits || 0);
-  const getRemainingUnits = (t: Trade) => {
-    const original = getOriginalUnits(t);
-    const rem =
-      t.remainingPositionSizeUnits === undefined || t.remainingPositionSizeUnits === null
-        ? original
-        : Number(t.remainingPositionSizeUnits);
-    return roundUnits(clampToZero(rem));
-  };
-
-  const getInitialRiskAmount = (t: Trade) => {
-    const entry = Number(t.entry || 0);
-    const stop = Number(t.stopLoss || 0);
-    const riskPerUnit = Math.abs(entry - stop);
-    const originalUnits = getOriginalUnits(t);
-    return riskPerUnit * originalUnits;
-  };
-
-  const sumPartialDollars = (t: Trade) => t.partialExits?.reduce((acc, p) => acc + (p.pnlDollars || 0), 0) || 0;
-  const sumPartialR = (t: Trade) => t.partialExits?.reduce((acc, p) => acc + (p.pnlR || 0), 0) || 0;
-
   const realizedDollars = (t: Trade) => {
-    const partial = sumPartialDollars(t);
+    const partial = t.partialExits?.reduce((acc, p) => acc + (p.pnlDollars || p.pnlDollars === 0 ? p.pnlDollars : (p as any).pnlDollars || 0), 0) || 0;
     const closed = t.pnl?.dollars ?? 0;
-    return t.status === "Cerrado" ? closed : partial;
+    return isClosed(t) ? closed : partial;
   };
 
   const realizedR = (t: Trade) => {
-    const partial = sumPartialR(t);
+    const partial = t.partialExits?.reduce((acc, p) => acc + (p.pnlR || p.pnlR === 0 ? p.pnlR : (p as any).pnlR || 0), 0) || 0;
     const closed = t.pnl?.rMultiple ?? 0;
-    return t.status === "Cerrado" ? closed : partial;
+    return isClosed(t) ? closed : partial;
   };
 
   const realizedPercent = (t: Trade) => {
     const closed = t.pnl?.percent ?? 0;
-    return t.status === "Cerrado" ? closed : 0;
+    return isClosed(t) ? closed : 0;
   };
 
   const filteredTrades = useMemo(() => {
     let result = [...trades];
 
-    if (filters.status !== "todos") result = result.filter((t) => t.status === filters.status);
-    if (filters.direction !== "ambos") result = result.filter((t) => t.direction === (filters.direction as any));
-    if (filters.market !== "todos") result = result.filter((t) => t.market === filters.market);
-    if (filters.asset) result = result.filter((t) => t.asset.toLowerCase().includes(filters.asset.toLowerCase()));
-    if (filters.setup !== "todos") result = result.filter((t) => t.setup === filters.setup);
+    if (filters.status !== "todos") {
+      result = result.filter((t) => {
+        if (filters.status === "Cerrado") return isClosed(t);
+        if (filters.status === "Abierto") return isOpen(t);
+        return true;
+      });
+    }
+
+    if (filters.direction !== "ambos") result = result.filter((t) => (t as any).direction === (filters.direction as any));
+    if (filters.market !== "todos") result = result.filter((t) => (t as any).market === filters.market);
+    if (filters.asset) result = result.filter((t) => ((t as any).asset || "").toLowerCase().includes(filters.asset.toLowerCase()));
+    if (filters.setup !== "todos") result = result.filter((t) => (t as any).setup === filters.setup);
 
     const sorted = [...result].sort(
-      (a, b) => new Date(a.tradeDateTime).getTime() - new Date(b.tradeDateTime).getTime()
+      (a, b) => new Date((a as any).tradeDateTime).getTime() - new Date((b as any).tradeDateTime).getTime()
     );
 
     return sorted.slice(-filters.limit);
   }, [trades, filters]);
 
-  const closedTradesForMetrics = useMemo(() => filteredTrades.filter((t) => t.status === "Cerrado"), [filteredTrades]);
+  const closedTradesForMetrics = useMemo(() => filteredTrades.filter(isClosed), [filteredTrades]);
+
+  const selectedTrade = useMemo(() => trades.find((t) => (t as any).id === selectedTradeId), [trades, selectedTradeId]);
 
   const persistTradesArray = (newTrades: Trade[]) => {
     if (!onUpdateTrades) {
-      console.error("HistoryAnalysis: onUpdateTrades is missing. Close updates cannot persist.");
+      console.error("HistoryAnalysis missing onUpdateTrades. Trade close changes cannot persist.");
       return;
     }
     onUpdateTrades(newTrades);
   };
 
   const persistTradeUpdate = (updatedTrade: Trade) => {
-    const newTrades = trades.map((t) => (t.id === updatedTrade.id ? updatedTrade : t));
+    const newTrades = trades.map((t) => ((t as any).id === (updatedTrade as any).id ? updatedTrade : t));
     persistTradesArray(newTrades);
   };
 
@@ -294,11 +285,11 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
     const total = closedTradesForMetrics.length;
     if (total === 0) return { total: 0, winRate: 0, pnl: 0, avgScore: 0, avgRR: 0, pnlR: 0 };
 
-    const wins = closedTradesForMetrics.filter((t) => (t.pnl?.dollars || 0) > 0).length;
-    const totalPnl = closedTradesForMetrics.reduce((acc, t) => acc + (t.pnl?.dollars || 0), 0);
-    const totalPnlR = closedTradesForMetrics.reduce((acc, t) => acc + (t.pnl?.rMultiple || 0), 0);
-    const totalScore = closedTradesForMetrics.reduce((acc, t) => acc + (t.qualityScore || 0), 0);
-    const totalRR = closedTradesForMetrics.reduce((acc, t) => acc + (t.rr || 0), 0);
+    const wins = closedTradesForMetrics.filter((t) => ((t as any).pnl?.dollars || 0) > 0).length;
+    const totalPnl = closedTradesForMetrics.reduce((acc, t) => acc + ((t as any).pnl?.dollars || 0), 0);
+    const totalPnlR = closedTradesForMetrics.reduce((acc, t) => acc + ((t as any).pnl?.rMultiple || 0), 0);
+    const totalScore = closedTradesForMetrics.reduce((acc, t) => acc + ((t as any).qualityScore || 0), 0);
+    const totalRR = closedTradesForMetrics.reduce((acc, t) => acc + ((t as any).rr || 0), 0);
 
     return {
       total,
@@ -361,11 +352,11 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
       }
 
       pdf.setFontSize(9);
-      const statusColor = t.status === "Abierto" ? [0, 180, 216] : [100, 116, 139];
+      const statusColor = isOpen(t) ? [0, 180, 216] : [100, 116, 139];
       pdf.setTextColor(statusColor[0], statusColor[1], statusColor[2]);
       pdf.text(
-        `${new Date(t.tradeDateTime).toLocaleDateString()} | ${t.asset} | ${t.direction.toUpperCase()} | Score: ${
-          t.qualityScore
+        `${new Date((t as any).tradeDateTime).toLocaleDateString()} | ${(t as any).asset} | ${String((t as any).direction || "").toUpperCase()} | Score: ${
+          (t as any).qualityScore
         }`,
         margin,
         y
@@ -381,20 +372,20 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
   };
 
   const exportMassCSV = () => {
-    const dataToExport = includeOpenInMass ? trades : trades.filter((t) => t.status === "Cerrado");
+    const dataToExport = includeOpenInMass ? trades : trades.filter(isClosed);
     const headers = ["ID", "Fecha", "Activo", "Direccion", "Setup", "Score", "PnL_USD", "PnL_R", "Status", "Tesis"];
 
     const rows = dataToExport.map((t) => [
-      t.id.slice(0, 8),
-      t.tradeDateTime,
-      t.asset,
-      t.direction,
-      t.setup,
-      t.qualityScore,
+      String((t as any).id || "").slice(0, 8),
+      (t as any).tradeDateTime,
+      (t as any).asset,
+      (t as any).direction,
+      (t as any).setup,
+      (t as any).qualityScore,
       realizedDollars(t),
       realizedR(t),
-      t.status,
-      `"${(t.thesis || "").replace(/"/g, '""')}"`,
+      (t as any).status,
+      `"${String((t as any).thesis || "").replace(/"/g, '""')}"`,
     ]);
 
     const csvContent = [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
@@ -406,7 +397,7 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
   };
 
   const exportMassJSON = () => {
-    const dataToExport = includeOpenInMass ? trades : trades.filter((t) => t.status === "Cerrado");
+    const dataToExport = includeOpenInMass ? trades : trades.filter(isClosed);
     const blob = new Blob([JSON.stringify(dataToExport, null, 2)], { type: "application/json" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
@@ -429,9 +420,14 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
     let cumulative = 0;
     return filteredTrades.map((t, i) => {
       const val =
-        equityMode === "usd" ? realizedDollars(t) : equityMode === "percent" ? realizedPercent(t) : realizedR(t);
+        equityMode === "usd"
+          ? realizedDollars(t)
+          : equityMode === "percent"
+          ? realizedPercent(t)
+          : realizedR(t);
+
       cumulative += val;
-      const dateObj = new Date(t.tradeDateTime);
+      const dateObj = new Date((t as any).tradeDateTime);
       return { index: i + 1, pnl: cumulative, date: `${dateObj.getDate()}/${dateObj.getMonth() + 1}` };
     });
   }, [filteredTrades, equityMode]);
@@ -439,12 +435,12 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
   const setupStats = useMemo(() => {
     const groups: Record<string, any> = {};
     closedTradesForMetrics.forEach((t) => {
-      const key = t.setup || "Sin Setup";
+      const key = (t as any).setup || "Sin setup";
       if (!groups[key]) groups[key] = { name: key, count: 0, wins: 0, pnl: 0, score: 0 };
       groups[key].count++;
-      if ((t.pnl?.dollars || 0) > 0) groups[key].wins++;
-      groups[key].pnl += t.pnl?.dollars || 0;
-      groups[key].score += t.qualityScore || 0;
+      if (((t as any).pnl?.dollars || 0) > 0) groups[key].wins++;
+      groups[key].pnl += (t as any).pnl?.dollars || 0;
+      groups[key].score += (t as any).qualityScore || 0;
     });
     return Object.values(groups)
       .map((g: any) => ({
@@ -458,16 +454,16 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
   const motiveStats = useMemo(() => {
     const groups: Record<string, any> = {};
     closedTradesForMetrics.forEach((t) => {
-      const key = t.motive || "Sin Motivo";
+      const key = (t as any).motive || "Sin motivo";
       if (!groups[key]) groups[key] = { name: key, count: 0, pnl: 0, score: 0 };
       groups[key].count++;
-      groups[key].pnl += t.pnl?.dollars || 0;
-      groups[key].score += t.qualityScore || 0;
+      groups[key].pnl += (t as any).pnl?.dollars || 0;
+      groups[key].score += (t as any).qualityScore || 0;
     });
     return Object.values(groups)
       .map((g: any) => ({
         ...g,
-        avgScore: g.count ? g.score / g.count : 0,
+        avgScore: g.count > 0 ? g.score / g.count : 0,
         isNegative: MOTIVES_NEGATIVE.includes(g.name) || g.pnl < 0,
       }))
       .sort((a: any, b: any) => b.count - a.count);
@@ -483,7 +479,7 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
     const weekStats = Array.from({ length: 5 }, (_, i) => ({ name: `Sem ${i + 1}`, pnl: 0, count: 0, wins: 0, score: 0 }));
 
     closedTradesForMetrics.forEach((t) => {
-      const d = new Date(t.tradeDateTime);
+      const d = new Date((t as any).tradeDateTime);
       const day = d.getDay();
       const hour = d.getHours();
       const month = d.getMonth();
@@ -491,14 +487,14 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
 
       const update = (obj: any) => {
         obj.count++;
-        obj.pnl += t.pnl?.dollars || 0;
-        obj.score += t.qualityScore || 0;
-        if ((t.pnl?.dollars || 0) > 0) obj.wins++;
+        obj.pnl += (t as any).pnl?.dollars || 0;
+        obj.score += (t as any).qualityScore || 0;
+        if (((t as any).pnl?.dollars || 0) > 0) obj.wins++;
       };
 
-      update(dayStats[day]);
-      update(hourStats[hour]);
-      update(monthStats[month]);
+      if (dayStats[day]) update(dayStats[day]);
+      if (hourStats[hour]) update(hourStats[hour]);
+      if (monthStats[month]) update(monthStats[month]);
       if (weekStats[week]) update(weekStats[week]);
     });
 
@@ -517,34 +513,11 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
     };
   }, [closedTradesForMetrics]);
 
-  const ensureUpdatable = () => {
-    if (onUpdateTrades) return true;
-    setCloseError("No se puede guardar porque falta onUpdateTrades en el componente padre.");
-    setPartialError("No se puede guardar porque falta onUpdateTrades en el componente padre.");
-    return false;
-  };
-
-  const computeDollarsForUnits = (t: Trade, exitPrice: number, unitsToClose: number) => {
-    const entry = Number(t.entry || 0);
-    const isLong = t.direction === "long";
-    const diff = exitPrice - entry;
-    const multiplier = isLong ? 1 : -1;
-    return diff * unitsToClose * multiplier;
-  };
-
-  const computeFinalPnl = (t: Trade, finalDollars: number): TradePnL => {
-    const initialRiskAmount = getInitialRiskAmount(t);
-    const finalRMultiple = initialRiskAmount === 0 ? 0 : finalDollars / initialRiskAmount;
-    const finalPercent = finalRMultiple * (t.riskR || 0);
-    return { dollars: finalDollars, percent: finalPercent, rMultiple: finalRMultiple };
-  };
-
   const handleConfirmClose = () => {
     if (!selectedTrade) return;
-    if (!ensureUpdatable()) return;
 
     const price = parseFloat(closePrice);
-    if (Number.isNaN(price) || price <= 0) {
+    if (isNaN(price) || price <= 0) {
       setCloseError("El precio de cierre debe ser un valor positivo.");
       return;
     }
@@ -553,18 +526,34 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
       return;
     }
 
-    const unitsToClose = getRemainingUnits(selectedTrade);
-    if (unitsToClose <= 0) {
+    const entry = (selectedTrade as any).entry;
+    const units =
+      (selectedTrade as any).remainingPositionSizeUnits !== undefined
+        ? (selectedTrade as any).remainingPositionSizeUnits
+        : (selectedTrade as any).positionSizeUnits;
+
+    if (units <= 0) {
       setCloseError("No queda tamaño de posición para cerrar.");
       return;
     }
 
-    const closeDollars = computeDollarsForUnits(selectedTrade, price, unitsToClose);
-    const finalDollars = sumPartialDollars(selectedTrade) + closeDollars;
-    const updatedPnl = computeFinalPnl(selectedTrade, finalDollars);
+    const isLong = (selectedTrade as any).direction === "long";
+    const diff = price - entry;
+    const multiplier = isLong ? 1 : -1;
+
+    const currentDollars = diff * units * multiplier;
+    const partialsTotalDollars = (selectedTrade as any).partialExits?.reduce((acc: number, p: any) => acc + (p.pnlDollars || 0), 0) || 0;
+    const finalDollars = partialsTotalDollars + currentDollars;
+
+    const riskPerUnit = Math.abs(entry - (selectedTrade as any).stopLoss);
+    const initialRiskAmount = riskPerUnit * (selectedTrade as any).positionSizeUnits;
+    const finalRMultiple = initialRiskAmount === 0 ? 0 : finalDollars / initialRiskAmount;
+    const finalPercent = finalRMultiple * (((selectedTrade as any).riskR || 0) as number);
+
+    const updatedPnl: TradePnL = { dollars: finalDollars, percent: finalPercent, rMultiple: finalRMultiple };
 
     const updatedTrade: Trade = {
-      ...selectedTrade,
+      ...(selectedTrade as any),
       status: "Cerrado",
       exitPrice: price,
       exitDateTime: closeDate,
@@ -581,62 +570,90 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
     setCloseError(null);
   };
 
-  // ✅ FIX: el % parcial se calcula contra el size ORIGINAL, no contra el remaining.
-  // ✅ 100% cierra todo lo restante.
   const handleConfirmPartialClose = () => {
     if (!selectedTrade) return;
-    if (!ensureUpdatable()) return;
 
     const percentage = parseFloat(partialPercentage);
     const price = parseFloat(partialPrice);
 
-    if (Number.isNaN(percentage) || percentage <= 0 || percentage > 100) {
+    if (isNaN(percentage) || percentage <= 0 || percentage > 100) {
       setPartialError("El porcentaje debe estar entre 1 y 100.");
       return;
     }
-    if (Number.isNaN(price) || price <= 0) {
+    if (isNaN(price) || price <= 0) {
       setPartialError("El precio de cierre debe ser un valor positivo.");
       return;
     }
 
-    const originalUnits = getOriginalUnits(selectedTrade);
-    const currentRemainingUnits = getRemainingUnits(selectedTrade);
+    const entry = (selectedTrade as any).entry;
+    const originalUnits = (selectedTrade as any).positionSizeUnits;
 
-    if (!originalUnits || originalUnits <= 0) {
-      setPartialError("Tamaño de posición inválido.");
-      return;
-    }
+    const currentRemainingUnits =
+      (selectedTrade as any).remainingPositionSizeUnits !== undefined ? (selectedTrade as any).remainingPositionSizeUnits : originalUnits;
 
     if (currentRemainingUnits <= 0) {
       setPartialError("No queda tamaño de posición para cerrar.");
       return;
     }
 
-    const closingAll = Math.abs(percentage - 100) < 1e-9;
+    const isLong = (selectedTrade as any).direction === "long";
+    const diff = price - entry;
+    const multiplier = isLong ? 1 : -1;
 
-    // ✅ Si no es 100, el porcentaje se interpreta como % del ORIGINAL (no del remaining).
-    const unitsToClose = closingAll ? currentRemainingUnits : (percentage / 100) * originalUnits;
+    if (percentage === 100) {
+      const unitsToClose = currentRemainingUnits;
+
+      const currentDollars = diff * unitsToClose * multiplier;
+      const partialsTotalDollars = (selectedTrade as any).partialExits?.reduce((acc: number, p: any) => acc + (p.pnlDollars || 0), 0) || 0;
+      const finalDollars = partialsTotalDollars + currentDollars;
+
+      const riskPerUnit = Math.abs(entry - (selectedTrade as any).stopLoss);
+      const initialRiskAmount = riskPerUnit * originalUnits;
+      const finalRMultiple = initialRiskAmount === 0 ? 0 : finalDollars / initialRiskAmount;
+      const finalPercent = finalRMultiple * (((selectedTrade as any).riskR || 0) as number);
+
+      const updatedPnl: TradePnL = { dollars: finalDollars, percent: finalPercent, rMultiple: finalRMultiple };
+
+      const updatedTrade: Trade = {
+        ...(selectedTrade as any),
+        status: "Cerrado",
+        exitPrice: price,
+        exitDateTime: partialDate,
+        closingNote: partialNote,
+        pnl: updatedPnl,
+        remainingPositionSizeUnits: 0,
+      };
+
+      persistTradeUpdate(updatedTrade);
+
+      setIsPartialClosing(false);
+      setPartialPercentage("");
+      setPartialPrice("");
+      setPartialNote("");
+      setPartialError(null);
+      return;
+    }
+
+    const unitsToClose = (percentage / 100) * currentRemainingUnits;
 
     if (unitsToClose <= 0) {
       setPartialError("El porcentaje seleccionado no cierra ninguna unidad.");
       return;
     }
-
-    // ✅ Evita que se cierre más de lo que queda.
     if (unitsToClose > currentRemainingUnits + 1e-9) {
-      const available = (currentRemainingUnits / originalUnits) * 100;
-      setPartialError(`Solo queda un ${available.toFixed(1)}% disponible.`);
+      setPartialError(`Solo queda un ${(currentRemainingUnits / originalUnits * 100).toFixed(1)}% disponible.`);
       return;
     }
 
-    const partialDollars = computeDollarsForUnits(selectedTrade, price, unitsToClose);
+    const partialDollars = diff * unitsToClose * multiplier;
 
-    const initialRiskAmount = getInitialRiskAmount(selectedTrade);
+    const riskPerUnit = Math.abs(entry - (selectedTrade as any).stopLoss);
+    const initialRiskAmount = riskPerUnit * originalUnits;
     const partialR = initialRiskAmount === 0 ? 0 : partialDollars / initialRiskAmount;
 
     const newPartial: PartialExit = {
       id: crypto.randomUUID(),
-      percentage, // % del ORIGINAL, consistente con botones 25/50/75/100
+      percentage,
       price,
       dateTime: partialDate,
       note: partialNote,
@@ -644,23 +661,27 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
       pnlR: partialR,
     };
 
-    const nextRemaining = roundUnits(clampToZero(currentRemainingUnits - unitsToClose));
-    const nextPartials = [...(selectedTrade.partialExits || []), newPartial];
+    const nextRemaining = Math.max(0, currentRemainingUnits - unitsToClose);
 
-    // ✅ Si ya no queda nada, cerramos el trade y calculamos pnl final
     if (nextRemaining <= 1e-9) {
-      const finalDollars = nextPartials.reduce((acc, p) => acc + (p.pnlDollars || 0), 0);
-      const updatedPnl = computeFinalPnl(selectedTrade, finalDollars);
+      const partialsTotalDollars =
+        ((selectedTrade as any).partialExits?.reduce((acc: number, p: any) => acc + (p.pnlDollars || 0), 0) || 0) + partialDollars;
+      const finalDollars = partialsTotalDollars;
+
+      const finalRMultiple = initialRiskAmount === 0 ? 0 : finalDollars / initialRiskAmount;
+      const finalPercent = finalRMultiple * (((selectedTrade as any).riskR || 0) as number);
+
+      const updatedPnl: TradePnL = { dollars: finalDollars, percent: finalPercent, rMultiple: finalRMultiple };
 
       const updatedTrade: Trade = {
-        ...selectedTrade,
+        ...(selectedTrade as any),
         status: "Cerrado",
         exitPrice: price,
         exitDateTime: partialDate,
         closingNote: partialNote,
         pnl: updatedPnl,
         remainingPositionSizeUnits: 0,
-        partialExits: nextPartials,
+        partialExits: [...(((selectedTrade as any).partialExits || []) as any[]), newPartial],
       };
 
       persistTradeUpdate(updatedTrade);
@@ -674,9 +695,9 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
     }
 
     const updatedTrade: Trade = {
-      ...selectedTrade,
+      ...(selectedTrade as any),
       remainingPositionSizeUnits: nextRemaining,
-      partialExits: nextPartials,
+      partialExits: [...(((selectedTrade as any).partialExits || []) as any[]), newPartial],
     };
 
     persistTradeUpdate(updatedTrade);
@@ -689,12 +710,25 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
   };
 
   if (selectedTrade) {
-    const remainingUnits = getRemainingUnits(selectedTrade);
-    const originalUnits = getOriginalUnits(selectedTrade);
-    const currentRemainingPercent = originalUnits > 0 ? (remainingUnits / originalUnits) * 100 : 0;
+    const originalUnits = (selectedTrade as any).positionSizeUnits;
+    const currentRemainingUnits =
+      (selectedTrade as any).remainingPositionSizeUnits !== undefined ? (selectedTrade as any).remainingPositionSizeUnits : originalUnits;
 
-    const realizedDollarsSelected = selectedTrade.status === "Cerrado" ? selectedTrade.pnl?.dollars || 0 : sumPartialDollars(selectedTrade);
-    const realizedRSelected = selectedTrade.status === "Cerrado" ? selectedTrade.pnl?.rMultiple || 0 : sumPartialR(selectedTrade);
+    const currentRemainingPercent =
+      isClosed(selectedTrade)
+        ? 0
+        : originalUnits > 0
+        ? (currentRemainingUnits / originalUnits) * 100
+        : 0;
+
+    const partialSumDollars = (selectedTrade as any).partialExits?.reduce((acc: number, p: any) => acc + (p.pnlDollars || 0), 0) || 0;
+    const partialSumR = (selectedTrade as any).partialExits?.reduce((acc: number, p: any) => acc + (p.pnlR || 0), 0) || 0;
+
+    const realizedDollarsSelected =
+      isClosed(selectedTrade) ? (selectedTrade as any).pnl?.dollars ?? 0 : partialSumDollars;
+
+    const realizedRSelected =
+      isClosed(selectedTrade) ? (selectedTrade as any).pnl?.rMultiple ?? 0 : partialSumR;
 
     return (
       <div className="min-h-screen bg-navy p-4 md:p-8 animate-fade-in relative">
@@ -707,12 +741,6 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
                   <X size={18} />
                 </button>
               </div>
-
-              {!onUpdateTrades && (
-                <div className="p-3 rounded-xl border border-red-500/30 bg-red-500/5 text-[10px] font-mono text-red-400 uppercase">
-                  Falta onUpdateTrades en el componente padre, el cierre no puede guardarse
-                </div>
-              )}
 
               <div className="space-y-4">
                 <div className="space-y-1">
@@ -762,8 +790,7 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
                 </button>
                 <button
                   onClick={handleConfirmClose}
-                  disabled={!onUpdateTrades}
-                  className="flex-[2] py-3 bg-cyan text-navy rounded-lg text-[10px] font-black uppercase hover:brightness-110 shadow-glow transition-all disabled:opacity-50"
+                  className="flex-[2] py-3 bg-cyan text-navy rounded-lg text-[10px] font-black uppercase hover:brightness-110 shadow-glow transition-all"
                 >
                   Ejecutar Cierre Total
                 </button>
@@ -785,16 +812,10 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
                 </button>
               </div>
 
-              {!onUpdateTrades && (
-                <div className="p-3 rounded-xl border border-red-500/30 bg-red-500/5 text-[10px] font-mono text-red-400 uppercase">
-                  Falta onUpdateTrades en el componente padre, la salida parcial no puede guardarse
-                </div>
-              )}
-
               <div className="bg-navy p-3 rounded-xl border border-navy-accent text-[10px] font-mono text-slate-400 flex justify-between">
                 <div>
                   <p>
-                    ACTIVO: <span className="text-white">{selectedTrade.asset}</span>
+                    ACTIVO: <span className="text-white">{(selectedTrade as any).asset}</span>
                   </p>
                   <p>
                     DISPONIBLE: <span className="text-gold">{currentRemainingPercent.toFixed(1)}%</span>
@@ -803,8 +824,8 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
                 <div className="text-right">
                   <p>
                     DIRECCIÓN:{" "}
-                    <span className={selectedTrade.direction === "long" ? "text-green-500" : "text-red-500"}>
-                      {selectedTrade.direction.toUpperCase()}
+                    <span className={(selectedTrade as any).direction === "long" ? "text-green-500" : "text-red-500"}>
+                      {String((selectedTrade as any).direction || "").toUpperCase()}
                     </span>
                   </p>
                 </div>
@@ -905,8 +926,7 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
                 </button>
                 <button
                   onClick={handleConfirmPartialClose}
-                  disabled={!onUpdateTrades}
-                  className="flex-[2] py-3 bg-gold text-navy rounded-lg text-[10px] font-black uppercase hover:brightness-110 shadow-lg shadow-gold/20 transition-all disabled:opacity-50"
+                  className="flex-[2] py-3 bg-gold text-navy rounded-lg text-[10px] font-black uppercase hover:brightness-110 shadow-lg shadow-gold/20 transition-all"
                 >
                   Confirmar Salida
                 </button>
@@ -926,21 +946,21 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
 
             <div className="flex gap-3 items-center">
               <button
-                onClick={() => exportAsPDF(tradeDetailRef, `Trade_${selectedTrade.asset}_${selectedTrade.id.slice(0, 4)}`)}
+                onClick={() => exportAsPDF(tradeDetailRef, `Trade_${(selectedTrade as any).asset}_${String((selectedTrade as any).id || "").slice(0, 4)}`)}
                 className="p-2 text-slate-400 hover:text-white"
                 title="Descargar PDF"
               >
                 <FileText size={18} />
               </button>
               <button
-                onClick={() => exportAsImage(tradeDetailRef, `Trade_${selectedTrade.asset}_${selectedTrade.id.slice(0, 4)}`)}
+                onClick={() => exportAsImage(tradeDetailRef, `Trade_${(selectedTrade as any).asset}_${String((selectedTrade as any).id || "").slice(0, 4)}`)}
                 className="p-2 text-slate-400 hover:text-white"
                 title="Descargar PNG"
               >
                 <ImageIcon size={18} />
               </button>
 
-              {selectedTrade.status === "Abierto" && (
+              {isOpen(selectedTrade) && (
                 <>
                   <button
                     onClick={() => {
@@ -975,23 +995,23 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
           <div ref={tradeDetailRef} className="bg-navy-light cyber-border rounded-2xl p-6 md:p-10 space-y-8 shadow-xl">
             <div className="flex justify-between items-start border-b border-navy-accent pb-6">
               <div>
-                <h2 className="text-3xl font-black italic text-white uppercase tracking-tighter">{selectedTrade.asset}</h2>
+                <h2 className="text-3xl font-black italic text-white uppercase tracking-tighter">{(selectedTrade as any).asset}</h2>
                 <p className="text-xs font-mono text-slate-500 mt-1 uppercase">
-                  ID Operativa: {selectedTrade.id.slice(0, 8)} // {new Date(selectedTrade.tradeDateTime).toLocaleString()}
+                  ID Operativa: {String((selectedTrade as any).id || "").slice(0, 8)} // {new Date((selectedTrade as any).tradeDateTime).toLocaleString()}
                 </p>
 
                 <div className="grid grid-cols-3 gap-2 mt-4 bg-navy/50 p-3 rounded-xl border border-navy-accent/50 max-w-sm">
                   <div className="text-center">
                     <p className="text-[8px] font-mono text-slate-500 uppercase">Entry</p>
-                    <p className="text-xs font-bold text-white">{selectedTrade.entry}</p>
+                    <p className="text-xs font-bold text-white">{(selectedTrade as any).entry}</p>
                   </div>
                   <div className="text-center border-x border-navy-accent/50">
                     <p className="text-[8px] font-mono text-slate-500 uppercase">Stop Loss</p>
-                    <p className="text-xs font-bold text-red-400">{selectedTrade.stopLoss}</p>
+                    <p className="text-xs font-bold text-red-400">{(selectedTrade as any).stopLoss}</p>
                   </div>
                   <div className="text-center">
                     <p className="text-[8px] font-mono text-slate-500 uppercase">Take Profit</p>
-                    <p className="text-xs font-bold text-green-400">{selectedTrade.takeProfits?.[0]}</p>
+                    <p className="text-xs font-bold text-green-400">{(selectedTrade as any).takeProfits?.[0]}</p>
                   </div>
                 </div>
               </div>
@@ -999,17 +1019,17 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
               <div className="text-right">
                 <span
                   className={`text-2xl font-black italic ${
-                    selectedTrade.direction === "long" ? "text-green-500" : "text-red-500"
+                    (selectedTrade as any).direction === "long" ? "text-green-500" : "text-red-500"
                   }`}
                 >
-                  {selectedTrade.direction.toUpperCase()}
+                  {String((selectedTrade as any).direction || "").toUpperCase()}
                 </span>
                 <p
                   className={`text-[10px] font-mono uppercase mt-1 ${
-                    selectedTrade.status === "Abierto" ? "text-cyan animate-pulse" : "text-slate-500"
+                    isOpen(selectedTrade) ? "text-cyan animate-pulse" : "text-slate-500"
                   }`}
                 >
-                  Status: {selectedTrade.status.toUpperCase()}
+                  Status: {String((selectedTrade as any).status || "").toUpperCase()}
                 </p>
               </div>
             </div>
@@ -1034,7 +1054,7 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
 
               <div className="bg-navy p-4 rounded-xl border border-navy-accent">
                 <p className="text-[9px] font-mono text-slate-500 uppercase tracking-widest mb-1">Quality Score</p>
-                <p className="text-xl font-bold text-gold">{selectedTrade.qualityScore}/10</p>
+                <p className="text-xl font-bold text-gold">{(selectedTrade as any).qualityScore}/10</p>
               </div>
             </div>
 
@@ -1046,12 +1066,12 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
                 <div className="bg-navy p-4 rounded-xl space-y-4 border border-navy-accent/30">
                   <div>
                     <p className="text-[10px] text-slate-500 uppercase font-mono mb-1">Setup Empleado:</p>
-                    <p className="text-sm font-bold text-slate-200">{selectedTrade.setup}</p>
+                    <p className="text-sm font-bold text-slate-200">{(selectedTrade as any).setup}</p>
                   </div>
                   <div>
                     <p className="text-[10px] text-slate-500 uppercase font-mono mb-1">Tesis Técnica:</p>
                     <p className="text-xs text-slate-400 leading-relaxed italic">
-                      "{selectedTrade.thesis || "Sin tesis registrada"}"
+                      "{(selectedTrade as any).thesis || "Sin tesis registrada"}"
                     </p>
                   </div>
                 </div>
@@ -1082,13 +1102,13 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
               </div>
             </div>
 
-            {selectedTrade.images?.length ? (
+            {(selectedTrade as any).images?.length > 0 ? (
               <div className="space-y-4">
                 <h3 className="text-xs font-mono text-slate-400 uppercase tracking-[0.2em] border-b border-navy-accent pb-2">
                   Evidencia Gráfica
                 </h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {selectedTrade.images.map((img: any, i: number) => (
+                  {(selectedTrade as any).images.map((img: any, i: number) => (
                     <div key={i} className="rounded-xl overflow-hidden border border-navy-accent aspect-video bg-navy group relative">
                       <img src={img.base64} alt={`Chart ${i + 1}`} className="w-full h-full object-cover" />
                     </div>
@@ -1199,12 +1219,6 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
         </div>
       </div>
 
-      {!onUpdateTrades && (
-        <div className="p-4 rounded-2xl border border-red-500/25 bg-red-500/5 text-red-300 font-mono text-[10px] uppercase">
-          IMPORTANTE: falta onUpdateTrades en el componente padre, cerrar trades no se puede guardar
-        </div>
-      )}
-
       <div className="bg-navy-light cyber-border p-5 rounded-2xl space-y-4">
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2">
@@ -1303,7 +1317,9 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
 
           <div className="flex items-end">
             <button
-              onClick={() => setFilters({ limit: 50, status: "todos", direction: "ambos", market: "todos", asset: "", setup: "todos" })}
+              onClick={() =>
+                setFilters({ limit: 50, status: "todos", direction: "ambos", market: "todos", asset: "", setup: "todos" })
+              }
               className="w-full py-2 bg-navy-accent text-slate-400 rounded text-[10px] font-bold uppercase border border-navy-accent hover:border-cyan/30 transition-all"
             >
               Limpiar
@@ -1322,7 +1338,7 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
         ].map((tab) => (
           <button
             key={tab.id}
-            onClick={() => setActiveTab(tab.id as TabId)}
+            onClick={() => setActiveTab(tab.id as any)}
             className={`flex items-center gap-2 px-6 py-4 text-[10px] font-black uppercase tracking-widest transition-all border-b-2 ${
               activeTab === tab.id ? "border-cyan text-cyan bg-cyan/5" : "border-transparent text-slate-500 hover:text-white"
             }`}
@@ -1333,90 +1349,389 @@ const HistoryAnalysis: React.FC<HistoryAnalysisProps> = ({ trades, profile, onUp
       </div>
 
       <div ref={contentRef} className="animate-fade-in min-h-[400px]">
-        {/* Keep your existing tab bodies here exactly as you had them */}
-        {/* I am leaving them out to keep this file focused on the closing persistence fix */}
-        {/* You can paste your existing tab JSX sections below unchanged */}
-      </div>
+        {activeTab === "summary" && (
+          <div className="space-y-6">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+              <SummaryCard
+                label="PNL TOTAL"
+                value={`$${stats.pnl.toLocaleString()}`}
+                sub={`${stats.pnlR.toFixed(1)}R`}
+                trend={stats.pnl >= 0 ? "up" : "down"}
+              />
+              <SummaryCard
+                label="WIN RATE"
+                value={`${stats.winRate.toFixed(1)}%`}
+                sub={`${stats.total} Cerrados`}
+                trend="none"
+              />
+              <SummaryCard label="SCORE AVG" value={stats.avgScore.toFixed(1)} sub="Calidad Ejecución" trend="none" />
+              <SummaryCard label="RR PROM" value={`1:${stats.avgRR.toFixed(2)}`} sub="Ratio Riesgo" trend="none" />
+              <SummaryCard label="STATUS" value="ESTABLE" sub="Auditoría OK" trend="none" />
+            </div>
 
-      <div className="space-y-3 animate-fade-in">
-        <div className="flex justify-between items-center px-4 text-[10px] font-mono text-slate-500 uppercase tracking-widest mb-2">
-          <span className="flex-[2]">Fecha / Activo</span>
-          <span className="flex-1 text-center">Setup</span>
-          <span className="flex-1 text-center">Score</span>
-          <span className="flex-1 text-right">Resultado</span>
-        </div>
-
-        {[...filteredTrades].reverse().map((t) => {
-          const dollars = realizedDollars(t);
-          const r = realizedR(t);
-
-          return (
-            <div
-              key={t.id}
-              onClick={() => setSelectedTradeId(t.id)}
-              className="bg-navy-light border border-navy-accent p-4 rounded-xl hover:border-cyan/50 hover:bg-navy-accent/10 cursor-pointer transition-all flex items-center group"
-            >
-              <div className="flex-[2] flex items-center gap-3">
-                <div className={`w-1 h-8 rounded-full ${t.direction === "long" ? "bg-green-500" : "bg-red-500"}`} />
-                <div>
-                  <div className="flex items-center gap-2">
-                    <p className="font-bold text-white text-sm uppercase">{t.asset}</p>
-                    <span
-                      className={`px-1.5 py-0.5 rounded-[4px] text-[8px] font-black uppercase tracking-tighter ${
-                        t.status === "Abierto"
-                          ? "bg-cyan/20 text-cyan border border-cyan/30 animate-pulse"
-                          : "bg-slate-800 text-slate-400 border border-slate-700"
-                      }`}
-                    >
-                      {t.status === "Abierto" ? "ABIERTO" : "CERRADO"}
-                    </span>
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              <div className="lg:col-span-2 bg-navy-light rounded-2xl cyber-border p-6 flex flex-col">
+                <div className="flex justify-between items-center mb-6">
+                  <p className="text-[10px] font-mono text-slate-400 uppercase tracking-widest">Curva de Equidad</p>
+                  <div className="flex gap-2 p-1 bg-navy rounded-lg border border-navy-accent">
+                    {(["usd", "percent", "r"] as EquityMode[]).map((mode) => (
+                      <button
+                        key={mode}
+                        onClick={() => setEquityMode(mode)}
+                        className={`px-3 py-1 text-[9px] font-black uppercase rounded transition-all ${
+                          equityMode === mode ? "bg-cyan text-navy" : "text-slate-500 hover:text-white"
+                        }`}
+                      >
+                        {mode === "usd" ? "USD" : mode === "percent" ? "%" : "R"}
+                      </button>
+                    ))}
                   </div>
-                  <p className="text-[10px] font-mono text-slate-500 uppercase">
-                    {new Date(t.tradeDateTime).toLocaleDateString()} • {t.direction.toUpperCase()}
-                  </p>
-                  <p className="text-[9px] font-mono text-slate-400 uppercase mt-0.5 tracking-tighter">
-                    E: {t.entry} | SL: {t.stopLoss} | TP: {t.takeProfits?.[0]}
-                  </p>
+                </div>
+
+                <div className="h-80 w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={equityData}>
+                      <defs>
+                        <linearGradient id="colorPnl" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="#00b4d8" stopOpacity={0.2} />
+                          <stop offset="95%" stopColor="#00b4d8" stopOpacity={0} />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                      <XAxis
+                        dataKey="date"
+                        stroke="#64748b"
+                        fontSize={10}
+                        tick={{ fill: "#64748b" }}
+                        tickLine={false}
+                        axisLine={false}
+                      />
+                      <YAxis
+                        stroke="#64748b"
+                        fontSize={10}
+                        tickFormatter={(val) =>
+                          equityMode === "usd" ? `$${val}` : equityMode === "percent" ? `${val}%` : `${val}R`
+                        }
+                      />
+                      <Tooltip
+                        contentStyle={{ backgroundColor: "#020610", border: "1px solid #1e293b", borderRadius: "8px" }}
+                        labelStyle={{ color: "#64748b", fontSize: "10px" }}
+                        itemStyle={{ color: "#00b4d8", fontSize: "12px", fontWeight: "bold" }}
+                      />
+                      <Area
+                        type="monotone"
+                        dataKey="pnl"
+                        stroke="#00b4d8"
+                        fillOpacity={1}
+                        fill="url(#colorPnl)"
+                        strokeWidth={3}
+                        animationDuration={1000}
+                      />
+                    </AreaChart>
+                  </ResponsiveContainer>
                 </div>
               </div>
 
-              <div className="flex-1 text-center">
-                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-tight">{t.setup}</p>
-              </div>
-
-              <div className="flex-1 flex flex-col items-center">
-                <span
-                  className={`text-sm font-black ${
-                    (t.qualityScore || 0) >= 8 ? "text-white" : (t.qualityScore || 0) >= 5 ? "text-gold" : "text-red-500"
-                  }`}
-                >
-                  {t.qualityScore}
-                </span>
-                <div className="flex gap-0.5 mt-1">
-                  {t.alertsTriggered?.map((_, i) => (
-                    <div key={i} className="w-1 h-1 rounded-full bg-red-500" />
-                  ))}
+              <div className="bg-navy-light p-6 rounded-2xl cyber-border-gold space-y-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <ShieldAlert className="text-gold" size={18} />
+                  <h3 className="text-sm font-black italic text-white uppercase tracking-wider">Diagnóstico Auditoría</h3>
                 </div>
-              </div>
 
-              <div className="flex-1 text-right">
-                <p className={`text-sm font-black ${dollars >= 0 ? "text-green-400" : "text-red-400"}`}>
-                  ${dollars.toLocaleString()}
-                </p>
-                <p className="text-[9px] font-mono text-slate-600 uppercase">{r.toFixed(2)}R</p>
-              </div>
+                <div className="space-y-4 text-xs text-slate-400 leading-relaxed font-mono">
+                  <div className="p-3 bg-navy/40 border-l-2 border-cyan rounded-r-lg">
+                    <p className="text-white font-bold mb-1">EFICIENCIA TÉCNICA</p>
+                    <p>Tu ventaja se concentra en trades con Score superior al promedio.</p>
+                  </div>
 
-              <div className="ml-4 opacity-0 group-hover:opacity-100 transition-opacity">
-                <ChevronRight size={16} className="text-cyan" />
+                  <div className="p-3 bg-navy/40 border-l-2 border-red-500/50 rounded-r-lg">
+                    <p className="text-white font-bold mb-1">RIESGO DETECTADO</p>
+                    <p>
+                      {(
+                        (closedTradesForMetrics.filter((t) => ((t as any).qualityScore || 0) < 5).length /
+                          (closedTradesForMetrics.length || 1)) *
+                        100
+                      ).toFixed(0)}
+                      % de operaciones fuera de parámetros.
+                    </p>
+                  </div>
+
+                  <div className="p-3 bg-navy/40 border-l-2 border-gold rounded-r-lg">
+                    <p className="text-white font-bold mb-1">SESgo PSICOLÓGICO</p>
+                    <p>Frecuencia elevada de estados negativos en trades cerrados.</p>
+                  </div>
+                </div>
               </div>
             </div>
-          );
-        })}
+          </div>
+        )}
 
-        {filteredTrades.length === 0 && (
-          <p className="text-center text-slate-400 font-mono py-12 uppercase text-xs tracking-widest border border-dashed border-navy-accent rounded-2xl">
-            Sin registros coincidentes
-          </p>
+        {activeTab === "setup" && (
+          <div className="space-y-8 animate-fade-in">
+            <div className="bg-navy-light cyber-border p-6 rounded-2xl">
+              <p className="text-[10px] font-mono text-slate-400 uppercase tracking-widest mb-8">Rendimiento por Estrategia</p>
+              <div className="h-96 w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={setupStats} layout="vertical" margin={{ left: 100 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" horizontal={false} />
+                    <XAxis type="number" stroke="#64748b" fontSize={10} />
+                    <YAxis type="category" dataKey="name" stroke="#f1f5f9" fontSize={11} width={120} />
+                    <Tooltip
+                      cursor={{ fill: "#1e293b" }}
+                      contentStyle={{ backgroundColor: "#020610", border: "1px solid #1e293b" }}
+                    />
+                    <Bar dataKey="pnl" name="PnL USD" fill="#00b4d8" radius={[0, 4, 4, 0]}>
+                      {setupStats.map((entry: any, index: number) => (
+                        <Cell key={`cell-${index}`} fill={entry.pnl >= 0 ? "#00b4d8" : "#ef4444"} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === "psycho" && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-8 animate-fade-in">
+            <div className="space-y-4">
+              <h3 className="text-xs font-black text-white italic uppercase tracking-widest border-l-2 border-cyan pl-3">
+                Correlación Psicológica
+              </h3>
+              <div className="space-y-3">
+                {motiveStats.map((m: any) => (
+                  <div
+                    key={m.name}
+                    className={`p-4 rounded-xl flex justify-between items-center group transition-all border ${
+                      m.isNegative ? "bg-red-500/5 border-red-500/20" : "bg-navy-light border-navy-accent hover:border-gold/30"
+                    }`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <Brain
+                        size={16}
+                        className={`${m.isNegative ? "text-red-500" : "text-slate-500 group-hover:text-gold"} transition-colors`}
+                      />
+                      <div>
+                        <p className={`text-xs font-bold uppercase ${m.isNegative ? "text-red-400" : "text-slate-200"}`}>
+                          {m.name}
+                        </p>
+                        <p className="text-[9px] font-mono text-slate-500 uppercase">{m.count} Operaciones</p>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <p className={`text-sm font-black ${m.pnl >= 0 ? "text-green-500" : "text-red-500"}`}>
+                        ${m.pnl.toLocaleString()}
+                      </p>
+                      <p className={`text-[9px] font-mono uppercase ${m.isNegative ? "text-red-500" : "text-gold"}`}>
+                        Score {m.avgScore.toFixed(1)}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <h3 className="text-xs font-black text-white italic uppercase tracking-widest border-l-2 border-cyan pl-3">
+                Distribución
+              </h3>
+              <div className="h-64 bg-navy-light cyber-border rounded-xl p-6">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={motiveStats}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                    <XAxis dataKey="name" fontSize={8} stroke="#64748b" hide />
+                    <YAxis fontSize={8} stroke="#64748b" />
+                    <Tooltip
+                      cursor={{ fill: "#1e293b" }}
+                      contentStyle={{ backgroundColor: "#020610", border: "1px solid #1e293b", borderRadius: "4px" }}
+                    />
+                    <Bar dataKey="pnl" animationDuration={1000}>
+                      {motiveStats.map((entry: any, index: number) => (
+                        <Cell key={`cell-${index}`} fill={entry.isNegative ? "#ef4444" : "#00b4d8"} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+
+              <div className="bg-red-500/5 border border-red-500/10 p-4 rounded-xl">
+                <p className="text-[10px] font-mono text-red-500 uppercase font-black mb-1 flex items-center gap-2">
+                  <AlertCircle size={12} /> Alerta
+                </p>
+                <p className="text-[10px] text-slate-400 italic font-mono leading-relaxed">
+                  Estados en rojo indican fuga sistemática de capital en trades cerrados.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === "time" && (
+          <div className="space-y-8 animate-fade-in">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+              <div className="space-y-4">
+                <h3 className="text-xs font-black text-white italic uppercase tracking-widest border-l-2 border-cyan pl-3">
+                  Rendimiento Semanal
+                </h3>
+                <div className="h-48 bg-navy-light cyber-border rounded-xl p-4">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={timeGroupings.day}>
+                      <XAxis dataKey="name" fontSize={10} stroke="#64748b" />
+                      <YAxis fontSize={10} stroke="#64748b" hide />
+                      <Tooltip contentStyle={{ backgroundColor: "#020610" }} />
+                      <Bar dataKey="pnl" radius={[4, 4, 0, 0]}>
+                        {timeGroupings.day.map((entry: any, index: number) => (
+                          <Cell key={`cell-${index}`} fill={entry.pnl >= 0 ? "#00b4d8" : "#ef4444"} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <h3 className="text-xs font-black text-white italic uppercase tracking-widest border-l-2 border-cyan pl-3">
+                  Distribución Horaria
+                </h3>
+                <div className="h-48 bg-navy-light cyber-border rounded-xl p-4">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={timeGroupings.hour}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                      <XAxis dataKey="name" fontSize={10} stroke="#64748b" interval={3} />
+                      <Tooltip contentStyle={{ backgroundColor: "#020610" }} />
+                      <Area type="monotone" dataKey="pnl" stroke="#fbbf24" fill="#fbbf24" fillOpacity={0.1} />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+              <div className="space-y-4">
+                <h3 className="text-xs font-black text-white italic uppercase tracking-widest border-l-2 border-cyan pl-3">
+                  Mes del Año
+                </h3>
+                <div className="h-48 bg-navy-light cyber-border rounded-xl p-4">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={timeGroupings.month}>
+                      <XAxis dataKey="name" fontSize={10} stroke="#64748b" />
+                      <YAxis fontSize={10} stroke="#64748b" hide />
+                      <Tooltip contentStyle={{ backgroundColor: "#020610" }} />
+                      <Bar dataKey="pnl" radius={[4, 4, 0, 0]}>
+                        {timeGroupings.month.map((entry: any, index: number) => (
+                          <Cell key={`cell-${index}`} fill={entry.pnl >= 0 ? "#00b4d8" : "#ef4444"} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <h3 className="text-xs font-black text-white italic uppercase tracking-widest border-l-2 border-cyan pl-3">
+                  Semana del Mes
+                </h3>
+                <div className="h-48 bg-navy-light cyber-border rounded-xl p-4">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={timeGroupings.week}>
+                      <XAxis dataKey="name" fontSize={10} stroke="#64748b" />
+                      <YAxis fontSize={10} stroke="#64748b" hide />
+                      <Tooltip contentStyle={{ backgroundColor: "#020610" }} />
+                      <Bar dataKey="pnl" radius={[4, 4, 0, 0]}>
+                        {timeGroupings.week.map((entry: any, index: number) => (
+                          <Cell key={`cell-${index}`} fill={entry.pnl >= 0 ? "#00b4d8" : "#ef4444"} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === "trades" && (
+          <div className="space-y-3 animate-fade-in">
+            <div className="flex justify-between items-center px-4 text-[10px] font-mono text-slate-500 uppercase tracking-widest mb-2">
+              <span className="flex-[2]">Fecha / Activo</span>
+              <span className="flex-1 text-center">Setup</span>
+              <span className="flex-1 text-center">Score</span>
+              <span className="flex-1 text-right">Resultado</span>
+            </div>
+
+            {[...filteredTrades].reverse().map((t) => {
+              const dollars = realizedDollars(t);
+              const r = realizedR(t);
+
+              return (
+                <div
+                  key={(t as any).id}
+                  onClick={() => setSelectedTradeId((t as any).id)}
+                  className="bg-navy-light border border-navy-accent p-4 rounded-xl hover:border-cyan/50 hover:bg-navy-accent/10 cursor-pointer transition-all flex items-center group"
+                >
+                  <div className="flex-[2] flex items-center gap-3">
+                    <div className={`w-1 h-8 rounded-full ${(t as any).direction === "long" ? "bg-green-500" : "bg-red-500"}`} />
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <p className="font-bold text-white text-sm uppercase">{(t as any).asset}</p>
+                        <span
+                          className={`px-1.5 py-0.5 rounded-[4px] text-[8px] font-black uppercase tracking-tighter ${
+                            isOpen(t)
+                              ? "bg-cyan/20 text-cyan border border-cyan/30 animate-pulse"
+                              : "bg-slate-800 text-slate-400 border border-slate-700"
+                          }`}
+                        >
+                          {isOpen(t) ? "ABIERTO" : "CERRADO"}
+                        </span>
+                      </div>
+                      <p className="text-[10px] font-mono text-slate-500 uppercase">
+                        {new Date((t as any).tradeDateTime).toLocaleDateString()} • {String((t as any).direction || "").toUpperCase()}
+                      </p>
+                      <p className="text-[9px] font-mono text-slate-400 uppercase mt-0.5 tracking-tighter">
+                        E: {(t as any).entry} | SL: {(t as any).stopLoss} | TP: {(t as any).takeProfits?.[0]}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex-1 text-center">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-tight">{(t as any).setup}</p>
+                  </div>
+
+                  <div className="flex-1 flex flex-col items-center">
+                    <span
+                      className={`text-sm font-black ${
+                        ((t as any).qualityScore || 0) >= 8 ? "text-white" : ((t as any).qualityScore || 0) >= 5 ? "text-gold" : "text-red-500"
+                      }`}
+                    >
+                      {(t as any).qualityScore}
+                    </span>
+                    <div className="flex gap-0.5 mt-1">
+                      {(t as any).alertsTriggered?.map((_: any, i: number) => (
+                        <div key={i} className="w-1 h-1 rounded-full bg-red-500" />
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="flex-1 text-right">
+                    <p className={`text-sm font-black ${dollars >= 0 ? "text-green-400" : "text-red-400"}`}>
+                      ${dollars.toLocaleString()}
+                    </p>
+                    <p className="text-[9px] font-mono text-slate-600 uppercase">{r.toFixed(2)}R</p>
+                  </div>
+
+                  <div className="ml-4 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <ChevronRight size={16} className="text-cyan" />
+                  </div>
+                </div>
+              );
+            })}
+
+            {filteredTrades.length === 0 && (
+              <p className="text-center text-slate-400 font-mono py-12 uppercase text-xs tracking-widest border border-dashed border-navy-accent rounded-2xl">
+                Sin registros coincidentes
+              </p>
+            )}
+          </div>
         )}
       </div>
     </div>

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import { UserProfile, Trade } from "./types";
 import { storageService } from "./services/storageService";
 import Onboarding from "./components/Onboarding";
@@ -11,10 +11,18 @@ import { ArrowLeft, LogOut, Edit, Briefcase } from "lucide-react";
 import { AuthGate } from "./components/AuthGate";
 import { supabase } from "./services/supabaseClient";
 
+type View =
+  | "dashboard"
+  | "new-trade"
+  | "history"
+  | "coach"
+  | "editing-profile"
+  | "profile";
+
 const App: React.FC = () => {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [trades, setTrades] = useState<Trade[]>([]);
-  const [currentView, setCurrentView] = useState("dashboard");
+  const [currentView, setCurrentView] = useState<View>("dashboard");
   const [alerts, setAlerts] = useState<Alert[]>([]);
 
   useEffect(() => {
@@ -22,13 +30,12 @@ const App: React.FC = () => {
     const savedTrades = storageService.getTrades();
 
     if (savedProfile) setProfile(savedProfile);
-
-    if (savedTrades && savedTrades.length > 0) {
-      setTrades(savedTrades);
-    } else {
-      setTrades([]);
-    }
+    setTrades(savedTrades && savedTrades.length > 0 ? savedTrades : []);
   }, []);
+
+  const removeAlert = (id: string) => {
+    setAlerts((prev) => prev.filter((a) => a.id !== id));
+  };
 
   const addAlert = (
     message: string,
@@ -37,10 +44,6 @@ const App: React.FC = () => {
     const id = crypto.randomUUID();
     setAlerts((prev) => [...prev, { id, message, type }]);
     setTimeout(() => removeAlert(id), 5000);
-  };
-
-  const removeAlert = (id: string) => {
-    setAlerts((prev) => prev.filter((a) => a.id !== id));
   };
 
   const handleOnboardingComplete = (newProfile: UserProfile) => {
@@ -53,10 +56,11 @@ const App: React.FC = () => {
     if (currentView === "editing-profile") {
       setCurrentView("profile");
       addAlert("Perfil actualizado correctamente", "info");
-    } else {
-      setCurrentView("dashboard");
-      addAlert(`Bienvenido de vuelta, ${newProfile.name}`, "info");
+      return;
     }
+
+    setCurrentView("dashboard");
+    addAlert(`Bienvenido de vuelta, ${newProfile.name}`, "info");
   };
 
   const handleUpdateProfile = (updatedProfile: UserProfile) => {
@@ -72,20 +76,17 @@ const App: React.FC = () => {
     addAlert("Protocolo de Trade Registrado Correctamente", "info");
   };
 
-  // ✅ NUEVO: necesario para que HistoryAnalysis pueda persistir cierres parciales y totales
-  const handleUpdateTrades = (updatedTrades: Trade[]) => {
-    setTrades(updatedTrades);
-    storageService.saveTrades(updatedTrades);
+  const handleUpdateTrades = (nextTrades: Trade[]) => {
+    setTrades(nextTrades);
+    storageService.saveTrades(nextTrades);
   };
 
-  // ✅ Logout correcto: cierra sesión Supabase y NO borra datos locales
   const handleLogout = async () => {
     try {
       await supabase.auth.signOut();
     } catch (err) {
       console.error("Logout error:", err);
     } finally {
-      // Fuerza refresh limpio para que AuthGate reevalúe sesión
       window.location.href = "/";
     }
   };
@@ -94,11 +95,14 @@ const App: React.FC = () => {
     return <Onboarding onComplete={handleOnboardingComplete} />;
   }
 
+  const showNav =
+    currentView !== "dashboard" && currentView !== "editing-profile";
+
   return (
     <div className="min-h-screen bg-navy selection:bg-cyan/30">
       <AlertOverlay alerts={alerts} onRemove={removeAlert} />
 
-      {currentView !== "dashboard" && currentView !== "editing-profile" && (
+      {showNav && (
         <nav className="sticky top-0 z-[60] bg-navy/80 backdrop-blur-md border-b border-navy-accent px-4 py-3 flex justify-between items-center">
           <button
             onClick={() => setCurrentView("dashboard")}
@@ -106,11 +110,12 @@ const App: React.FC = () => {
           >
             <ArrowLeft size={18} /> Volver
           </button>
+
           <div className="flex items-center gap-4">
             <span className="text-[10px] font-mono text-slate-400 uppercase tracking-widest">
               {currentView.replace("-", " ")}
             </span>
-            <div className="w-1 h-1 rounded-full bg-cyan shadow-[0_0_8px_rgba(0,180,216,0.6)]"></div>
+            <div className="w-1 h-1 rounded-full bg-cyan shadow-[0_0_8px_rgba(0,180,216,0.6)]" />
             <span className="text-[10px] font-mono text-white uppercase tracking-wider">
               {profile.name}
             </span>
@@ -146,7 +151,10 @@ const App: React.FC = () => {
           <HistoryAnalysis
             trades={trades}
             profile={profile}
-            onUpdateTrades={handleUpdateTrades}
+            onUpdateTrades={(nextTrades) => {
+              setTrades(nextTrades);
+              storageService.saveTrades(nextTrades);
+            }}
           />
         )}
 
@@ -166,6 +174,7 @@ const App: React.FC = () => {
             <h2 className="text-4xl font-black italic text-white tracking-tight uppercase">
               Configuración de Perfil
             </h2>
+
             <div className="bg-navy-light cyber-border p-8 rounded-2xl space-y-6 text-left">
               <div className="grid grid-cols-2 gap-4">
                 <div>
@@ -174,6 +183,7 @@ const App: React.FC = () => {
                   </p>
                   <p className="text-xl font-bold text-white">{profile.name}</p>
                 </div>
+
                 <div>
                   <p className="text-[10px] font-mono text-slate-400 uppercase tracking-widest">
                     Estrategia Principal
@@ -234,6 +244,7 @@ const App: React.FC = () => {
                 <p className="text-[10px] font-mono text-slate-400 uppercase tracking-widest mb-4">
                   Cuentas de Trading ({profile.accounts.length})
                 </p>
+
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   {profile.accounts.map((acc) => (
                     <div
@@ -243,6 +254,7 @@ const App: React.FC = () => {
                       <div className="p-2 bg-gold/10 rounded-lg text-gold shrink-0">
                         <Briefcase size={18} />
                       </div>
+
                       <div className="flex-1">
                         <p className="text-sm font-bold text-white leading-tight italic">
                           {acc.name}
@@ -264,6 +276,7 @@ const App: React.FC = () => {
                 >
                   <Edit size={18} /> Editar Perfil y Cuentas
                 </button>
+
                 <button
                   onClick={() => setCurrentView("dashboard")}
                   className="w-full py-4 bg-white text-navy font-black rounded-lg hover:brightness-90 transition-all uppercase tracking-wide text-sm"
@@ -272,6 +285,7 @@ const App: React.FC = () => {
                 </button>
               </div>
             </div>
+
             <p className="text-[10px] font-mono text-slate-600 uppercase tracking-[0.4em]">
               Sistema v2.5 // Equilibrium Trading OS
             </p>
